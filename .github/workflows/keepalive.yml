@@ -1,13 +1,13 @@
 # 咖啡机计数 - Render 自动保活 (GitHub Actions 免费额度)
-# 仅在工作日(周一~周五) 北京时间 11:00-13:00 自动 ping 唤醒
+# 每天(含周末) 北京时间 11:00-13:00 自动 ping 唤醒
 # 对应 UTC 时间 03:00-04:59 (GitHub Actions cron 使用 UTC)
 # 完全在 GitHub 云端运行, 不需要你电脑开机
 name: Keep Render Alive
 
 on:
   schedule:
-    # 每5分钟一次, 仅周一至周五, UTC 03:00-04:55 (≈北京 11:00-12:59)
-    - cron: "*/5 3-4 * * 1-5"
+    # 每5分钟一次, 每天(含周末), UTC 03:00-04:55 (≈北京 11:00-12:59)
+    - cron: "*/5 3-4 * * *"
   workflow_dispatch: {}   # 也支持手动点 "Run workflow" 立即跑一次
 
 permissions:
