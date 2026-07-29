@@ -20,7 +20,7 @@ from urllib.error import HTTPError, URLError
 import json as _json
 import traceback
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory, Response
 from flask_cors import CORS
 
 app = Flask(__name__, static_folder=None)
@@ -33,7 +33,10 @@ if TURSO_URL.startswith("libsql://"):
     TURSO_URL = "https://" + TURSO_URL[len("libsql://"):]
 TURSO_URL = TURSO_URL.rstrip("/")
 TURSO_TOKEN = os.environ.get("TURSO_TOKEN", "")
-USE_TURSO = bool(TURSO_URL and TURSO_TOKEN)
+# 占位符或空都不算有效配置
+_PLACEHOLDER = "在这里粘贴你的token"
+_tok_valid = bool(TURSO_TOKEN) and TURSO_TOKEN != _PLACEHOLDER
+USE_TURSO = bool(TURSO_URL and _tok_valid)
 
 
 # ---------- SQLite 回退 ----------
@@ -73,7 +76,7 @@ def _turso_call(sql, args=None):
         f"{TURSO_URL}/v2/pipeline",
         data=body,
         headers={
-            "Authorization": f"Bearer {TURSO_TOKEN}",
+            "Authorization": ("Bearer " + TURSO_TOKEN).encode("utf-8").decode("latin-1"),
             "Content-Type": "application/json",
         },
         method="POST",
@@ -285,6 +288,74 @@ def all_exception_handler(e):
         "type": type(e).__name__,
         "trace": traceback.format_exc()[:800],
     }), 500
+
+
+# ---------- 自定义图标上传 ----------
+import io
+from PIL import Image  # 本地需安装 Pillow；若缺失则跳过该功能
+
+ICON_BG = (194, 231, 252)  # 浅蓝底（无透明，iOS 友好）
+
+def _regen_icons(src_img):
+    """把上传的图片重采样为 3 种尺寸并写入工作区"""
+    src = src_img.convert("RGBA")
+    for size, name in [(180, "apple-touch-icon.png"),
+                        (192, "icon-192.png"),
+                        (512, "icon-512.png")]:
+        im = src.resize((size, size), Image.LANCZOS)
+        bg = Image.new("RGB", (size, size), ICON_BG)
+        mask = im.split()[3] if im.mode == "RGBA" else None
+        bg.paste(im, mask=mask)
+        bg.save(os.path.join(BASE_DIR, name), "PNG", optimize=True)
+
+@app.route("/icon-upload", methods=["GET", "POST"])
+def icon_upload():
+    if request.method == "GET":
+        return '''<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>自定义图标</title>
+<style>body{font-family:-apple-system,sans-serif;background:#fff;color:#2a2a2a;
+padding:24px;max-width:420px;margin:0 auto}
+h2{color:#4F7A52;font-size:20px}
+input[type=file]{margin:16px 0;width:100%}
+button{background:#6B9B6E;color:#fff;border:none;border-radius:12px;
+padding:12px 20px;font-size:15px;cursor:pointer}
+.note{color:#9aa0a6;font-size:13px;margin-top:16px;line-height:1.6}
+img{margin-top:16px;max-width:160px;border:1px solid #eee;border-radius:16px}</style>
+</head><body>
+<h2>自定义主屏图标</h2>
+<p>选择一张图片，生成 iOS 标准图标（180/192/512）。</p>
+<input type="file" id="f" accept="image/*">
+<button onclick="upload()">生成并应用</button>
+<div id="msg"></div>
+<div class="note">提示：已安装到主屏幕的图标不会自动更新，需删除后重新“添加到主屏幕”。</div>
+<script>
+async function upload(){
+  const f=document.getElementById('f').files[0];
+  if(!f){alert('请先选择图片');return;}
+  const fd=new FormData();fd.append('file',f);
+  document.getElementById('msg').textContent='处理中…';
+  const r=await fetch('/icon-upload',{method:'POST',body:fd});
+  const d=await r.json();
+  if(r.ok){document.getElementById('msg').innerHTML=
+    '✅ 已应用！<br><img src="/apple-touch-icon.png?'+Date.now()+'">';}
+  else{document.getElementById('msg').textContent='✗ '+(d.error||'失败');}
+}
+</script></body></html>'''
+    # POST: 接收图片，重生成图标
+    try:
+        from PIL import Image as _PILImage
+    except ImportError:
+        return jsonify({"error": "服务器未安装 Pillow，无法生成图标"}), 500
+    f = request.files.get("file")
+    if not f:
+        return jsonify({"error": "未收到文件"}), 400
+    try:
+        img = _PILImage.open(io.BytesIO(f.read()))
+        _regen_icons(img)
+    except Exception as e:
+        return jsonify({"error": f"图片处理失败: {e}"}), 400
+    return jsonify({"ok": True})
 
 
 if __name__ == "__main__":

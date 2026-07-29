@@ -1,0 +1,29 @@
+# 咖啡机计数 - Render 自动保活 (GitHub Actions 免费额度)
+# 每 10 分钟访问一次首页, 防止 Render 免费版休眠
+# 完全在 GitHub 云端运行, 不需要你电脑开机
+name: Keep Render Alive
+
+on:
+  schedule:
+    # 每 10 分钟触发一次 (UTC 时间)
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}   # 也支持手动点 "Run workflow" 立即跑一次
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Ping Render 首页 (唤醒冷启动)
+        run: |
+          echo "访问首页唤醒..."
+          curl -sS -m 50 -o /dev/null -w "首页 HTTP %{http_code}\n" \
+            https://coffee-counter-qxim.onrender.com/ || echo "唤醒请求已发出(冷启动中)"
+
+      - name: 检查中央数据库健康
+        run: |
+          curl -sS -m 20 https://coffee-counter-qxim.onrender.com/api/health \
+            || echo "health 暂不可达(可能仍在冷启动)"
