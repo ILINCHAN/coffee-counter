@@ -13,7 +13,7 @@ Turso HTTP API 严格按官方文档 /v2/pipeline:
 import os
 import sqlite3
 import uuid
-from datetime import datetime, date
+from datetime import datetime, date, timezone, timedelta
 from contextlib import closing
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
@@ -41,7 +41,14 @@ def _sqlite_conn():
     db_file = os.path.join(BASE_DIR, "coffee.db")
     conn = sqlite3.connect(db_file)
     conn.execute("""CREATE TABLE IF NOT EXISTS records (
-        id TEXT PRIMARY KEY, cnt INTEGER NOT NULL, time TEXT NOT NULL)""")
+        id TEXT PRIMARY KEY, cnt INTEGER NOT NULL, time TEXT NOT NULL, note TEXT)""")
+    # 兼容旧库：若缺 note 列则补上
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(records)").fetchall()]
+    if "note" not in cols:
+        try:
+            conn.execute("ALTER TABLE records ADD COLUMN note TEXT")
+        except sqlite3.OperationalError:
+            pass
     return conn
 
 
@@ -110,10 +117,15 @@ def _turso_call(sql, args=None):
 def _turso_init():
     res, err = _turso_call(
         "CREATE TABLE IF NOT EXISTS records "
-        "(id TEXT PRIMARY KEY, cnt INTEGER NOT NULL, time TEXT NOT NULL)"
+        "(id TEXT PRIMARY KEY, cnt INTEGER NOT NULL, time TEXT NOT NULL, note TEXT)"
     )
     if err:
         raise RuntimeError(f"init: {err}")
+    # 兼容旧库：若缺 note 列则补上（libSQL 支持 ADD COLUMN）
+    try:
+        _turso_call("ALTER TABLE records ADD COLUMN note TEXT")
+    except Exception:
+        pass
     return res
 
 
@@ -139,6 +151,8 @@ def _turso_exec_select(sql, args=None):
             if i < len(col_names) and col_names[i]:
                 v = cell.get("value") if isinstance(cell, dict) else cell
                 entry[col_names[i]] = v
+        # 保证 note 字段存在
+        entry.setdefault("note", "")
         out.append(entry)
     return out
 
@@ -147,26 +161,30 @@ def _turso_exec_select(sql, args=None):
 def _load():
     if USE_TURSO:
         _turso_init()
-        rows = _turso_exec_select("SELECT id, cnt, time FROM records")
-        return [{"id": r["id"], "count": int(r["cnt"]), "time": r["time"]} for r in rows]
+        rows = _turso_exec_select("SELECT id, cnt, time, note FROM records")
+        return [{"id": r["id"], "count": int(r["cnt"]),
+                 "time": r["time"], "note": r.get("note") or ""} for r in rows]
     with closing(_sqlite_conn()) as conn:
-        rows = conn.execute("SELECT id, cnt, time FROM records").fetchall()
-    return [{"id": r[0], "count": r[1], "time": r[2]} for r in rows]
+        rows = conn.execute("SELECT id, cnt, time, note FROM records").fetchall()
+    return [{"id": r[0], "count": r[1], "time": r[2], "note": r[3] or ""} for r in rows]
 
 
-def _insert(rid, cnt, t):
+def _insert(rid, cnt, t, note=""):
+    note = (note or "")[:40]  # 限制长度，防止滥用
     if USE_TURSO:
         # 注意：value 必须是字符串
         args = [
             {"type": "text", "value": str(rid)},
             {"type": "integer", "value": str(int(cnt))},
             {"type": "text", "value": str(t)},
+            {"type": "text", "value": str(note)},
         ]
-        _turso_exec_write("INSERT INTO records (id, cnt, time) VALUES (?, ?, ?)", args)
+        _turso_exec_write(
+            "INSERT INTO records (id, cnt, time, note) VALUES (?, ?, ?, ?)", args)
         return
     with closing(_sqlite_conn()) as conn:
-        conn.execute("INSERT INTO records (id, cnt, time) VALUES (?,?,?)",
-                     (rid, cnt, t))
+        conn.execute("INSERT INTO records (id, cnt, time, note) VALUES (?,?,?,?)",
+                     (rid, cnt, t, note))
         conn.commit()
 
 
@@ -223,12 +241,16 @@ def add_record():
         return jsonify({"error": "请输入大于0的数字"}), 400
     if count > 99:
         return jsonify({"error": "单次最多99"}), 400
+    note = str(body.get("note", "") or "").strip()[:40]
+    # 北京时间存储（naive，不带时区后缀，前端按本地时间解析不会错乱）
+    bj_now = datetime.utcnow() + timedelta(hours=8)
     record = {
         "id": uuid.uuid4().hex[:8],
         "count": count,
-        "time": datetime.now().isoformat(timespec="seconds"),
+        "time": bj_now.strftime("%Y-%m-%dT%H:%M:%S"),
+        "note": note,
     }
-    _insert(record["id"], record["count"], record["time"])
+    _insert(record["id"], record["count"], record["time"], record["note"])
     data = _load()
     return jsonify({"record": record, "stats": _stats(data)}), 201
 
