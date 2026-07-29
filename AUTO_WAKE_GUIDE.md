@@ -37,13 +37,7 @@ iOS 缓存问题, 不是代码问题。图标文件已验证是小猫 (apple-tou
 3. 用 Safari 重新打开 https://coffee-counter-qxim.onrender.com
 4. 底部分享 → 添加到主屏幕 → 这次是小猫
 
-## 五、自定义图标 (高级)
-
-访问 https://coffee-counter-qxim.onrender.com/icon-upload
-选图 → 生成并应用。注意: 此功能需确保 Render 上跑的是含 /icon-upload 路由的最新版 app.py。
-若打开是 405, 说明 Render 上代码偏旧, 需重新 push 最新 app.py。
-
-## 六、最终链接
+## 五、最终链接
 
 👉 **https://coffee-counter-qxim.onrender.com**
 
