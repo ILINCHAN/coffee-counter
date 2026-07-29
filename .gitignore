@@ -1,8 +1,0 @@
-__pycache__/
-*.pyc
-coffee_data.json
-coffee.db
-server.log
-preview.png
-venv/
-.env
