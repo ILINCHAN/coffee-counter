@@ -292,7 +292,12 @@ def all_exception_handler(e):
 
 # ---------- 自定义图标上传 ----------
 import io
-from PIL import Image  # 本地需安装 Pillow；若缺失则跳过该功能
+try:
+    from PIL import Image as _PILImage
+    PIL_AVAILABLE = True
+except ImportError:
+    _PILImage = None
+    PIL_AVAILABLE = False
 
 ICON_BG = (194, 231, 252)  # 浅蓝底（无透明，iOS 友好）
 
@@ -302,8 +307,8 @@ def _regen_icons(src_img):
     for size, name in [(180, "apple-touch-icon.png"),
                         (192, "icon-192.png"),
                         (512, "icon-512.png")]:
-        im = src.resize((size, size), Image.LANCZOS)
-        bg = Image.new("RGB", (size, size), ICON_BG)
+        im = src.resize((size, size), _PILImage.LANCZOS)
+        bg = _PILImage.new("RGB", (size, size), ICON_BG)
         mask = im.split()[3] if im.mode == "RGBA" else None
         bg.paste(im, mask=mask)
         bg.save(os.path.join(BASE_DIR, name), "PNG", optimize=True)
@@ -343,9 +348,7 @@ async function upload(){
 }
 </script></body></html>'''
     # POST: 接收图片，重生成图标
-    try:
-        from PIL import Image as _PILImage
-    except ImportError:
+    if not PIL_AVAILABLE:
         return jsonify({"error": "服务器未安装 Pillow，无法生成图标"}), 500
     f = request.files.get("file")
     if not f:
