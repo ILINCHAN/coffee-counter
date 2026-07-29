@@ -14,6 +14,7 @@ from contextlib import closing
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 import json as _json
+import traceback
 
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
@@ -36,19 +37,18 @@ def _sqlite_conn():
     return conn
 
 
-# ---------- Turso HTTP API (无第三方依赖,只走 urllib) ----------
-def _turso_call(stmts):
+# ---------- Turso HTTP API ----------
+def _turso_call(sql, args=None):
     """
-    stmts: list of {"sql": str, "args": [{"type": "text"|"integer", "value": str|int}]} (args 可选)
-    返回: results list
+    一个 SQL 直接发,使用 /v2/pipeline 端点,格式与官方文档一致。
+    返回 (results, error_msg)
     """
-    payload = []
-    for s in stmts:
-        item = {"q": s["sql"]}
-        if s.get("args"):
-            item["args"] = [{"type": a["type"], "value": a["value"]} for a in s["args"]]
-        payload.append(item)
-    body = _json.dumps({"statements": payload}).encode()
+    stmt = {"q": sql}
+    if args:
+        # Turso 期望 args 是 list[{"type": "text|integer|...", "value": ...}]
+        # 每个 value 必须是 string
+        stmt["args"] = args
+    body = _json.dumps({"requests": [{"type": "execute", "stmt": stmt}]}).encode()
     req = Request(
         f"{TURSO_URL}/v2/pipeline",
         data=body,
@@ -59,59 +59,68 @@ def _turso_call(stmts):
         method="POST",
     )
     try:
-        with urlopen(req, timeout=15) as resp:
+        with urlopen(req, timeout=20) as resp:
             data = _json.loads(resp.read().decode())
+        # 用 requests 模式时,response key 是 'results'
+        results = data.get("results", [])
+        err = data.get("error")
+        if err:
+            return None, f"Turso error: {err}"
+        # 检查每个 result
+        out = []
+        for r in results:
+            if "response" in r:
+                out.append(r["response"])
+            elif "error" in r:
+                return None, f"Turso SQL error: {r['error']}"
+        return out, None
     except HTTPError as e:
         try:
             err_body = e.read().decode()
         except Exception:
             err_body = ""
-        raise RuntimeError(f"Turso HTTP {e.code}: {err_body}")
+        return None, f"Turso HTTP {e.code}: {err_body[:300]}"
     except URLError as e:
-        raise RuntimeError(f"Turso URL error: {e}")
-    return data.get("results", [])
-
-
-def _check(results):
-    """检查 results 里每个 statement 是否成功,失败抛错"""
-    for r in results:
-        if "error" in r:
-            raise RuntimeError(f"Turso SQL error: {r['error']}")
-
-
-def _arg(v):
-    """把 Python 值转 Turso 参数"""
-    if isinstance(v, bool):
-        return {"type": "integer", "value": "1" if v else "0"}
-    if isinstance(v, int):
-        return {"type": "integer", "value": str(v)}
-    return {"type": "text", "value": str(v)}
+        return None, f"Turso URL error: {e}"
+    except Exception as e:
+        return None, f"Turso unknown error: {e}"
 
 
 def _turso_init():
-    res = _turso_call([{"sql":
+    res, err = _turso_call(
         "CREATE TABLE IF NOT EXISTS records "
-        "(id TEXT PRIMARY KEY, cnt INTEGER NOT NULL, time TEXT NOT NULL)"}])
-    _check(res)
+        "(id TEXT PRIMARY KEY, cnt INTEGER NOT NULL, time TEXT NOT NULL)"
+    )
+    if err:
+        raise RuntimeError(f"init: {err}")
+    return res
+
+
+def _turso_exec_write(sql, args):
+    res, err = _turso_call(sql, args)
+    if err:
+        raise RuntimeError(f"write: {err}")
+    return res
+
+
+def _turso_exec_select(sql):
+    res, err = _turso_call(sql)
+    if err:
+        raise RuntimeError(f"select: {err}")
+    if not res:
+        return []
+    result_obj = res[0].get("result", {})
+    rows = result_obj.get("rows", []) or []
+    cols = result_obj.get("col_names", []) or []
+    return [dict(zip(cols, row)) for row in rows]
 
 
 # ---------- 统一读写 ----------
 def _load():
     if USE_TURSO:
         _turso_init()
-        res = _turso_call([{"sql": "SELECT id, cnt, time FROM records"}])
-        _check(res)
-        rows = res[0].get("response", {}).get("result", {}).get("rows", []) or []
-        cols = res[0].get("response", {}).get("result", {}).get("col_names", []) or []
-        out = []
-        for row in rows:
-            entry = dict(zip(cols, row))
-            out.append({
-                "id": entry["id"],
-                "count": int(entry["cnt"]),
-                "time": entry["time"],
-            })
-        return out
+        rows = _turso_exec_select("SELECT id, cnt, time FROM records")
+        return [{"id": r["id"], "count": int(r["cnt"]), "time": r["time"]} for r in rows]
     with closing(_sqlite_conn()) as conn:
         rows = conn.execute("SELECT id, cnt, time FROM records").fetchall()
     return [{"id": r[0], "count": r[1], "time": r[2]} for r in rows]
@@ -119,10 +128,13 @@ def _load():
 
 def _insert(rid, cnt, t):
     if USE_TURSO:
-        res = _turso_call([{"sql":
-            "INSERT INTO records (id, cnt, time) VALUES (?, ?, ?)",
-            "args": [_arg(rid), _arg(cnt), _arg(t)]}])
-        _check(res)
+        # Turso pipeline 参数格式:value 必须是字符串
+        args = [
+            {"type": "text", "value": str(rid)},
+            {"type": "integer", "value": str(int(cnt))},
+            {"type": "text", "value": str(t)},
+        ]
+        _turso_exec_write("INSERT INTO records (id, cnt, time) VALUES (?, ?, ?)", args)
         return
     with closing(_sqlite_conn()) as conn:
         conn.execute("INSERT INTO records (id, cnt, time) VALUES (?,?,?)",
@@ -132,10 +144,8 @@ def _insert(rid, cnt, t):
 
 def _delete(rid):
     if USE_TURSO:
-        res = _turso_call([{"sql":
-            "DELETE FROM records WHERE id = ?",
-            "args": [_arg(rid)]}])
-        _check(res)
+        args = [{"type": "text", "value": str(rid)}]
+        _turso_exec_write("DELETE FROM records WHERE id = ?", args)
         return 1
     with closing(_sqlite_conn()) as conn:
         cur = conn.execute("DELETE FROM records WHERE id = ?", (rid,))
@@ -205,7 +215,28 @@ def delete_record(rid):
 
 @app.route("/api/health", methods=["GET"])
 def health():
-    return jsonify({"db": "turso" if USE_TURSO else "sqlite"})
+    info = {"db": "turso" if USE_TURSO else "sqlite"}
+    if USE_TURSO:
+        info["url"] = TURSO_URL
+        # 探测一下,看真实错误
+        try:
+            _turso_init()
+            info["turso_ok"] = True
+        except Exception as e:
+            info["turso_ok"] = False
+            info["error"] = str(e)
+    return jsonify(info)
+
+
+@app.errorhandler(Exception)
+def all_exception_handler(e):
+    # 所有未捕获异常都返回 JSON 而不是 HTML
+    return jsonify({
+        "error": "server_error",
+        "message": str(e),
+        "type": type(e).__name__,
+        "trace": traceback.format_exc()[:800],
+    }), 500
 
 
 if __name__ == "__main__":
