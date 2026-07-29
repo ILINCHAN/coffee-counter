@@ -220,7 +220,8 @@ def index():
 @app.route("/<path:fname>")
 def static_files(fname):
     allowed = {"manifest.json", "icon.svg", "icon-192.png", "icon-512.png",
-               "apple-touch-icon.png", "favicon.ico", "flower.svg"}
+               "apple-touch-icon.png", "apple-touch-icon.v2.png",
+               "favicon.ico", "flower.svg"}
     if fname not in allowed:
         return jsonify({"error": "not found"}), 404
     return send_from_directory(BASE_DIR, fname)
