@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: coffee-counter
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 30
+    healthCheckPath: /
+    # 数据库用 Turso 免费云 SQLite（中央持久化）
+    # 在 Render 控制台 Environment 添加两个变量：
+    #   TURSO_URL   = https://xxx.turso.io
+    #   TURSO_TOKEN = 你的 token
+    # 不设置时自动回退本地 SQLite
