@@ -17,6 +17,7 @@ app = Flask(__name__, static_folder=None)
 CORS(app)
 
 BASE_DIR = os.environ.get("DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
+os.makedirs(BASE_DIR, exist_ok=True)
 DB_FILE = os.path.join(BASE_DIR, "coffee.db")
 
 
